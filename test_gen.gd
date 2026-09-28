@@ -3,9 +3,9 @@ extends SceneTree
 ## change to _build_generated_map, _generate_blocked, _warnsdorff, or the
 ## backbite functions.
 ##
-## Run: cd <project> && godot4 --headless --script test_gen.gd
+## Run through tests/run.sh maps so imports, logs and test data stay outside Git.
 ##
-## What it checks per (board_size x zigzag_flag) trial:
+## What it checks per board size and seed:
 ##   - _generate_blocked succeeds (or falls back to hamiltonian/serpentine)
 ##   - spawn -> base is BFS-reachable through the produced grid
 ##   - prints two sample maps as ASCII so you can eyeball the path style
@@ -19,46 +19,47 @@ extends SceneTree
 ## pulled into a build. It's a dev tool, not gameplay code.
 
 func _initialize() -> void:
-	var Level := load("res://scripts/level.gd")
-	var sz := {"name": "Huge", "cols": 64, "rows": 30}
-	# Wider seed pool, zigzag off.
+	call_deferred("_run")
+
+func _run() -> void:
+	var level_script := load("res://scripts/level.gd")
+	var failures := 0
+	var cases := 0
 	var seeds := [11, 22, 33, 44, 55, 66, 77, 88, 99, 111, 222, 333]
-	for zz in [false]:
+	for dimensions in level_script.BOARD_SIZES:
 		var totals := {"trials": 0, "any_3plus": 0, "any_5plus": 0,
 			"max_streak_sum": 0, "stair_count_sum": 0}
 		var samples: Array = []  # save a couple to print
 		for s in seeds:
-			var level = Level.new()
-			level.COLS = sz["cols"]
-			level.ROWS = sz["rows"]
+			var level = level_script.new()
+			level.COLS = dimensions.x
+			level.ROWS = dimensions.y
+			level.spawn_cell = Vector2i(0, level.ROWS / 2)
+			level.base_cell = Vector2i(level.COLS - 1, level.ROWS / 2)
 			seed(s)
-			level._path_zigzag = zz
 			var grid: Array = []
 			for _r in range(12):
 				grid = level._generate_blocked()
 				if not grid.is_empty():
 					break
-			# Set up spawn/base so the BFS flip-validator knows the endpoints,
-			# then apply the corner-flip post-process directly.
-			if not grid.is_empty():
-				level.spawn_cell = Vector2i(0, level.ROWS / 2)
-				level.base_cell = Vector2i(level.COLS - 1, level.ROWS / 2)
-				# Match what _generate_blocked sets for spawn/base
-				# (path[0] = right edge, path[end] = left edge after end-steering)
-				for r in range(level.ROWS):
-					if grid[r][0] == 0:
-						level.spawn_cell = Vector2i(0, r)
-						break
-				for r in range(level.ROWS):
-					if grid[r][level.COLS - 1] == 0:
-						level.base_cell = Vector2i(level.COLS - 1, r)
-						break
-				level._flip_block_corners(grid)
 			if grid.is_empty():
-				continue
+				grid = level._generate_hamiltonian()
+			if grid.is_empty():
+				grid = level._generate_serpentine(randf() < 0.5)
+			# Use the generator's actual endpoints, as the application does.
+			level._flip_block_corners(grid)
 			# Reconstruct the path by walking cells - flood-fill from spawn
 			# only along single-cell-wide corridors so we get the path order.
 			var path := _trace_path(grid, level.spawn_cell, level.base_cell)
+			cases += 1
+			var open_cells := 0
+			for row in grid:
+				for value in row:
+					if value == 0:
+						open_cells += 1
+			if path.is_empty() or path.size() != open_cells:
+				failures += 1
+				push_error("Generated corridor is disconnected or branches for %s, seed %d" % [dimensions, s])
 			var streaks := _count_turn_streaks(path)
 			var max_streak := 0
 			var stair3 := 0
@@ -80,7 +81,7 @@ func _initialize() -> void:
 			samples.append({"seed": s, "grid": grid, "level": level,
 				"path_len": path.size(), "max_streak": max_streak,
 				"stair3": stair3, "stair5": stair5})
-		print("=== zigzag=%s ===" % ("YES" if zz else "no "))
+		print("=== board=%s ===" % dimensions)
 		print("trials=%d  any 3+ stairs: %d/%d  any 5+ stairs: %d/%d  avg max-streak: %.1f  avg stair3 count: %.1f" %
 			[totals["trials"], totals["any_3plus"], totals["trials"],
 			totals["any_5plus"], totals["trials"],
@@ -92,8 +93,11 @@ func _initialize() -> void:
 			print("--- sample seed=%d path_len=%d max_streak=%d stair3=%d stair5=%d ---" %
 				[s["seed"], s["path_len"], s["max_streak"], s["stair3"], s["stair5"]])
 			_print_grid(s["grid"], s["level"].spawn_cell, s["level"].base_cell, s["level"])
+		for sample in samples:
+			sample["level"].free()
 		print()
-	quit()
+	print("Generated-map checks: %d passed, %d failed" % [cases - failures, failures])
+	quit(1 if failures else 0)
 
 ## Walk the grid as a graph (path cells = 0) and reconstruct the unique
 ## spawn->base route since it's single-cell wide (each path cell has at

@@ -79,18 +79,27 @@ func cells_remaining() -> int:
 func is_alive() -> bool:
 	return not _dead
 
-func _process(delta: float) -> void:
+func simulate_step(delta: float) -> void:
 	if _dead or GameState.game_over:
 		return
 	for dtype in _dots.keys():
 		var d: Dictionary = _dots[dtype]
-		d["timer"] -= delta
-		take_damage(d["dps"] * delta, dtype)
+		var active := minf(delta, maxf(0.0, float(d["timer"])))
+		var boosted := minf(active, maxf(0.0, _vuln_timer))
+		# Integrate vulnerability only while it is active, without applying it twice.
+		var amount := float(d["dps"]) * (active + boosted * _vuln_pct)
+		var vulnerability := _vuln_pct
+		_vuln_pct = 0.0
+		take_damage(amount, dtype)
+		_vuln_pct = vulnerability
+		d["timer"] = maxf(0.0, float(d["timer"]) - delta)
 		if _dead:
 			return
 		if d["timer"] <= 0.0:
 			_dots.erase(dtype)
+	var movement := base_speed * delta
 	if _slow_timer > 0.0:
+		movement -= base_speed * _slow_factor * minf(delta, _slow_timer)
 		_slow_timer -= delta
 		if _slow_timer <= 0.0:
 			_slow_factor = 0.0
@@ -107,7 +116,7 @@ func _process(delta: float) -> void:
 		if heading.length_squared() > 0.01:
 			_face = heading.angle()
 	# Advance through as many cells as elapsed time allows (high-speed catch-up).
-	var step := speed * delta
+	var step := movement
 	var guard := 0
 	while step > 0.0 and not _path.is_empty() and guard < 256:
 		guard += 1
@@ -251,10 +260,10 @@ func _die() -> void:
 	# Gold Mines boost kill gold (0.5%/level each, board-wide).
 	var gold_award := reward
 	if _level != null:
-		gold_award = int(round(reward * (1.0 + _level.gold_bonus())))
+		gold_award = int(minf(GameRules.MAX_CURRENCY, round(reward * (1.0 + _level.gold_bonus()))))
+	GameState.score = GameRules.safe_add(GameState.score, reward)
+	GameState.total_kills = GameRules.safe_add(GameState.total_kills, 1)
 	GameState.add_gold(gold_award)
-	GameState.score += reward
-	GameState.total_kills += 1
 	# Drifting "+gold" reward popup, in the wave-info gold colour.
 	if _level != null:
 		# spawn_float expects a GLOBAL position (it runs to_local on it).

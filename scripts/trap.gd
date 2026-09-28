@@ -40,7 +40,7 @@ func can_upgrade() -> bool:
 	# do nothing, so stop there. Damage-dealing traps keep scaling.
 	if type == "tar_trap":
 		return level < PieceData.SLOW_MAX_LEVEL
-	return true
+	return level < GameRules.MAX_LEVEL
 
 ## Adjacent-Amplifier bonus fraction for this trap's cell (0 when none).
 func _amp() -> float:
@@ -59,8 +59,10 @@ func _boosted_reach() -> float:
 func upgrade_cost() -> int:
 	return PieceData.upgrade_cost(type, level)
 
-func do_upgrade() -> void:
-	gold_invested += upgrade_cost()
+func do_upgrade(paid: int = 0) -> void:
+	if not can_upgrade():
+		return
+	gold_invested = GameRules.safe_add(gold_invested, paid)
 	level += 1
 	if level > GameState.best_tower_level:
 		GameState.best_tower_level = level
@@ -104,7 +106,7 @@ func enhancement_text() -> String:
 			int(round(amp * 100.0)), GameState.arrow(), GameState.abbrev(dmg * (1.0 + amp))]
 	return ""
 
-func _process(delta: float) -> void:
+func simulate_step(delta: float) -> void:
 	if GameState.game_over:
 		return
 	if AOE_TYPES.has(type):

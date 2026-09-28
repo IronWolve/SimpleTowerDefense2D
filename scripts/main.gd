@@ -4,15 +4,20 @@ extends Node2D
 var level: Level
 var wave_manager: WaveManager
 var hud: HUD
+var simulation: GameSimulation
 
 func _ready() -> void:
 	Engine.time_scale = 1.0
+	GameState.game_speed = 1.0
+	get_tree().auto_accept_quit = false
 	get_tree().paused = false
 	# Restore the windowed/fullscreen mode the user left on last quit.
 	_apply_fullscreen(GameState.fullscreen)
 	# Resuming a saved run? Restore economy now; the board and wave counters come
 	# back as their nodes are created. Otherwise start a fresh run.
-	var loading: bool = not GameState.pending_load.is_empty()
+	var loading: bool = not GameState.pending_load.is_empty() and GameState.is_save_compatible(GameState.pending_load)
+	if not loading:
+		GameState.pending_load = {}
 	var save_data: Dictionary = GameState.pending_load
 	if loading:
 		GameState.apply_run_state(save_data)
@@ -37,6 +42,12 @@ func _ready() -> void:
 	add_child(hud)
 
 	level.hud = hud
+	simulation = GameSimulation.new()
+	simulation.level = level
+	simulation.waves = wave_manager
+	add_child(simulation)
+	if not level.load_notice.is_empty():
+		hud.show_toast(level.load_notice, 4.5)
 
 	Events.game_over.connect(_on_game_over)
 

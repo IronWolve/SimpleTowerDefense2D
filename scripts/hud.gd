@@ -5,7 +5,7 @@ extends CanvasLayer
 
 const BAR_Y := 600.0
 const APP_NAME := "Simple Tower Defense 2D"
-const APP_VERSION := "v58"
+const APP_VERSION := GameRules.VERSION
 const BUY_TYPES := ["tower", "ice", "laser", "cannon", "sniper", "missile",
 	"gold", "amplifier",
 	"wall", "tar_trap", "poison_trap", "fire_trap", "spike_trap", "volcano_trap"]
@@ -148,6 +148,8 @@ func _ready() -> void:
 	_build_help()
 	_build_stats()
 	_build_toast()
+	for overlay in [_options_root, _help_root, _stats_root]:
+		_enable_modal_keyboard(overlay)
 	_connect_events()
 	_refresh_stats()
 	_refresh_buy_buttons()
@@ -156,6 +158,8 @@ func _ready() -> void:
 	_update_wave_info()
 
 func _process(_delta: float) -> void:
+	_speed_button.text = _speed_label()
+	_speed_button.tooltip_text = "Left-click: faster   Right-click: slower\nActual simulation: %.1fx" % GameState.effective_speed
 	if _new_game_armed and Time.get_ticks_msec() - _new_game_armed_ms > 3000:
 		_disarm_new_game()
 	if _toast_label != null and _toast_label.visible \
@@ -172,6 +176,12 @@ func _process(_delta: float) -> void:
 ## speed, Esc opens / closes the options menu.
 func _unhandled_key_input(event: InputEvent) -> void:
 	if not event is InputEventKey or not event.pressed or event.echo:
+		return
+	var focus := get_viewport().gui_get_focus_owner()
+	if focus is LineEdit or focus is TextEdit:
+		return
+	if _has_modal() and event.keycode != KEY_ESCAPE:
+		get_viewport().set_input_as_handled()
 		return
 	match event.keycode:
 		KEY_SPACE:
@@ -237,7 +247,7 @@ func _unhandled_key_input(event: InputEvent) -> void:
 
 func _step_speed(delta: int) -> void:
 	_speed_idx = clampi(_speed_idx + delta, 0, SPEEDS.size() - 1)
-	Engine.time_scale = SPEEDS[_speed_idx]
+	GameState.game_speed = SPEEDS[_speed_idx]
 	_speed_button.text = _speed_label()
 
 ## A right-click anywhere closes an open options menu or popup and returns to normal.
@@ -324,6 +334,7 @@ func _show_generate_choice_popup() -> void:
 		_disarm_new_game()
 		_close_modal())
 	panel.add_child(cancel)
+	_enable_modal_keyboard(root)
 
 func _disarm_new_game() -> void:
 	_new_game_armed = false
@@ -379,6 +390,7 @@ func _build_toast() -> void:
 	# Framed flat panel (same style as the info/upgrade popups), auto-sized to
 	# its text and centered horizontally near the top in show_toast().
 	_toast_label = Label.new()
+	_toast_label.z_index = 100
 	_toast_label.position = Vector2(0, 14)
 	_toast_label.add_theme_font_size_override("font_size", 14)
 	_toast_label.add_theme_color_override("font_color", Color(0.96, 0.97, 1.0))
@@ -488,7 +500,7 @@ func _build_bar() -> void:
 	bar.add_child(_start_button)
 
 	# Auto / Pause stack vertically on the left; Speed sits beside them.
-	_auto_button = _make_button("Auto: On", Vector2(1070, 62), Vector2(98, 26), 11)
+	_auto_button = _make_button("Auto: On" if wave_manager.auto_advance else "Auto: Off", Vector2(1070, 62), Vector2(98, 26), 11)
 	_auto_button.pressed.connect(_on_auto_pressed)
 	bar.add_child(_auto_button)
 
@@ -648,8 +660,9 @@ func _build_options() -> void:
 
 	# Group 2: modifiers that can be toggled at any time.
 	panel.add_child(_make_section("MODIFIERS", Vector2(32, 336)))
-	_hard_toggle = _make_toggle("Hard mode   (no bonus lives; half gold/lives/walls)", Vector2(30, 358),
+	_hard_toggle = _make_toggle("Hard mode (no wave life bonus)", Vector2(30, 358),
 		not GameState.bonus_lives_per_wave, _on_hard_option_toggled)
+	_hard_toggle.tooltip_text = "No lives awarded after waves. New games start with half the normal gold, lives and wall stock."
 	panel.add_child(_hard_toggle)
 	_lives_toggle = _make_toggle("Unlimited lives", Vector2(30, 402),
 		GameState.unlimited_lives, _on_lives_toggled)
@@ -668,18 +681,52 @@ func _build_options() -> void:
 		GameState.drag_draw_walls, _on_drag_option_toggled)
 	panel.add_child(_drag_toggle)
 
-	var stats_btn := _make_button("Stats", Vector2(12, 638), Vector2(138, 46), 16)
+	var stats_btn := _make_button("Stats", Vector2(12, 638), Vector2(100, 46), 16)
 	stats_btn.pressed.connect(_on_stats_pressed)
 	panel.add_child(stats_btn)
 	# Quit (with a save prompt). Pointless on web (browser tab), so hide it there.
-	var quit_btn := _make_button("Quit", Vector2(161, 638), Vector2(138, 46), 16)
+	var quit_btn := _make_button("Quit", Vector2(124, 638), Vector2(100, 46), 16)
 	quit_btn.pressed.connect(_on_quit_pressed)
 	if OS.has_feature("web"):
 		quit_btn.visible = false
 	panel.add_child(quit_btn)
-	var close := _make_button("Close", Vector2(310, 638), Vector2(138, 46), 18)
+	var licenses := _make_button("Licenses", Vector2(236, 638), Vector2(100, 46), 15)
+	licenses.pressed.connect(_show_licenses)
+	panel.add_child(licenses)
+	var close := _make_button("Close", Vector2(348, 638), Vector2(100, 46), 18)
 	close.pressed.connect(_on_options_pressed)
 	panel.add_child(close)
+	if OS.has_feature("web"):
+		stats_btn.size.x = 138
+		licenses.position.x = 161
+		licenses.size.x = 138
+		close.position.x = 310
+		close.size.x = 138
+
+func _show_licenses() -> void:
+	_close_modal()
+	var overlay := ColorRect.new()
+	overlay.color = Color(0, 0, 0, 0.85)
+	overlay.size = Vector2(1280, 720)
+	add_child(overlay)
+	_modal_root = overlay
+	var panel := _make_panel(Vector2(230, 50), Vector2(820, 620))
+	overlay.add_child(panel)
+	var title := _make_label(Vector2(20, 12), 22)
+	title.text = "Open-source licenses"
+	panel.add_child(title)
+	var body := RichTextLabel.new()
+	body.position = Vector2(20, 50)
+	body.size = Vector2(780, 500)
+	body.selection_enabled = true
+	body.bbcode_enabled = false
+	body.add_theme_font_size_override("normal_font_size", 14)
+	body.text = LicenseNotices.text()
+	panel.add_child(body)
+	var close := _make_button("Close", Vector2(340, 565), Vector2(140, 42), 17)
+	close.pressed.connect(_close_modal)
+	panel.add_child(close)
+	_enable_modal_keyboard(overlay)
 
 func _build_help() -> void:
 	_help_root = ColorRect.new()
@@ -823,7 +870,7 @@ func _map_display_name(key: String) -> String:
 		"generate": return "Generated"
 		_:
 			if key.begins_with("custom:"):
-				return key.substr(7)
+				return key.substr(7).replace("[", "[lb]")
 			return key
 
 func _fmt_play_time(secs: float) -> String:
@@ -866,8 +913,7 @@ func _make_toggle(text: String, pos: Vector2, on: bool, cb: Callable) -> CheckBu
 func _on_options_pressed() -> void:
 	_set_options_visible(not _options_root.visible)
 
-## Manual save (Options). Only allowed between waves - we don't serialize live
-## enemies, so loading always resumes at the start of a wave with the field clear.
+## Manual save includes live enemies, projectiles and wave progress.
 func _on_save_game_pressed() -> void:
 	_show_save_popup()
 
@@ -899,6 +945,8 @@ func _show_save_popup() -> void:
 	name_input.position = Vector2(24, 56)
 	name_input.size = Vector2(330, 38)
 	name_input.placeholder_text = "save name..."
+	name_input.max_length = 200
+	name_input.keep_editing_on_text_submit = true
 	name_input.add_theme_font_size_override("font_size", 16)
 	panel.add_child(name_input)
 
@@ -922,6 +970,9 @@ func _show_save_popup() -> void:
 		var nm := name_input.text.strip_edges()
 		if nm == "":
 			nm = _default_save_name()  # blank -> auto-name, so saving is one click
+		if not GameState.valid_data_name(nm):
+			show_toast("Use a shorter name without slashes or reserved characters", 3.0)
+			return
 		if level != null and GameState.write_named_save(nm, level.serialize_run()):
 			show_toast("Saved: %s" % nm, 2.0)
 			name_input.clear()
@@ -946,8 +997,10 @@ func _show_save_popup() -> void:
 			show_toast("Select a save to delete", 2.5)
 			return
 		var nm := list.get_item_text(sel[0])
-		GameState.delete_named_save(nm)
-		show_toast("Deleted: %s" % nm, 2.0)
+		if GameState.delete_named_save(nm):
+			show_toast("Deleted: %s" % nm, 2.0)
+		else:
+			show_toast("Delete failed", 3.0)
 		populate.call())
 	panel.add_child(del_btn)
 
@@ -961,6 +1014,9 @@ func _show_save_popup() -> void:
 	var close_btn := _make_button("Close", Vector2(372, 444), Vector2(104, 46), 16)
 	close_btn.pressed.connect(_close_save_popup)
 	panel.add_child(close_btn)
+	_enable_modal_keyboard(root)
+	name_input.grab_focus()
+	name_input.text_submitted.connect(func(_text: String): save_btn.pressed.emit())
 
 ## Closes the Save/Load popup if open. Returns true if one was actually closed.
 func _close_save_popup() -> bool:
@@ -993,17 +1049,22 @@ func _on_quit_pressed() -> void:
 	label.add_theme_font_size_override("font_size", 17)
 	panel.add_child(label)
 	var save_quit := _make_button("Save & Quit", Vector2(16, 126), Vector2(160, 52), 15)
+	save_quit.disabled = level == null or GameState.game_over
 	save_quit.pressed.connect(func() -> void:
-		if level != null and not GameState.game_over:
-			GameState.write_named_save("Quit save - Wave %d" % GameState.wave, level.serialize_run())
-		get_tree().quit())
+		if level == null or GameState.game_over:
+			return
+		if not GameState.write_named_save("Quit save - Wave %d" % GameState.wave, level.serialize_run()):
+			show_toast("Save failed; the game is still open", 3.0)
+			return
+		GameState.request_quit())
 	panel.add_child(save_quit)
 	var just_quit := _make_button("Quit", Vector2(184, 126), Vector2(110, 52), 15)
-	just_quit.pressed.connect(func() -> void: get_tree().quit())
+	just_quit.pressed.connect(GameState.request_quit)
 	panel.add_child(just_quit)
 	var cancel := _make_button("Cancel", Vector2(302, 126), Vector2(122, 52), 15)
 	cancel.pressed.connect(_close_modal)
 	panel.add_child(cancel)
+	_enable_modal_keyboard(root)
 
 ## Close the quit prompt if open. Returns true if one was actually closed.
 func _close_modal() -> bool:
@@ -1033,12 +1094,13 @@ func _load_data(data: Dictionary) -> void:
 	if data.is_empty():
 		show_toast("No saved game found", 3.0)
 		return
-	if not GameState.is_save_compatible(data):
-		show_toast("Save is from an incompatible version (got v%d, expected v%d)" % [
-			int(data.get("v", 0)), GameState.SAVE_FORMAT_VERSION], 4.5)
+	var error := SaveSchema.validate(data)
+	if not error.is_empty():
+		show_toast(error, 4.5)
 		return
+	GameState.flush_statistics()
 	GameState.pending_load = data
-	Engine.time_scale = 1.0
+	GameState.game_speed = 1.0
 	get_tree().paused = false
 	get_tree().reload_current_scene()
 
@@ -1054,11 +1116,23 @@ func _set_options_visible(v: bool) -> void:
 	if _new_game_armed:
 		_disarm_new_game()
 	if v:
+		if level != null:
+			level.cancel_pointer_drag()
 		_was_paused = get_tree().paused
 		get_tree().paused = true
 		_refresh_map_select()
 	else:
 		get_tree().paused = _was_paused
+
+func _enable_modal_keyboard(overlay: Control) -> void:
+	for button in overlay.find_children("*", "BaseButton", true, false):
+		button.focus_mode = Control.FOCUS_ALL
+
+func _has_modal() -> bool:
+	for overlay in [_options_root, _help_root, _stats_root, _save_popup_root, _modal_root, _end_root]:
+		if is_instance_valid(overlay) and overlay.visible:
+			return true
+	return false
 
 func _on_hard_option_toggled(pressed: bool) -> void:
 	GameState.bonus_lives_per_wave = not pressed
@@ -1171,7 +1245,7 @@ func _on_save_map_pressed() -> void:
 	if clean == "":
 		clean = "unnamed"
 	var grid: Array = level.dump_walls_grid()
-	if GameState.save_map(clean, grid):
+	if GameState.save_map(clean, grid, level.spawn_cell, level.base_cell):
 		_map_name_input.text = ""
 		_refresh_map_select()
 		var where := "browser storage" if OS.has_feature("web") else "Maps Folder"
@@ -1221,7 +1295,7 @@ func _connect_events() -> void:
 func _refresh_stats() -> void:
 	_gold_label.text = "Gold:  unlimited" if GameState.unlimited_money else "Gold:  %s" % GameState.abbrev(GameState.gold)
 	_lives_label.text = "Lives:  unlimited" if GameState.unlimited_lives \
-		else "Lives:  %d" % GameState.lives
+		else "Lives:  %s" % GameState.abbrev(GameState.lives)
 	_wave_label.text = "Wave:  %d" % GameState.wave
 	_score_label.text = "Score:  %s" % GameState.abbrev(GameState.score)
 
@@ -1296,9 +1370,9 @@ func _update_wave_info() -> void:
 	var total := int(d.get("total_reward", 0))
 	# With Gold Mines on the board, also show the gold-enhanced total.
 	var bonus := level.gold_bonus() if level != null else 0.0
-	var gold_str := "$%s total" % GameState.abbrev(total)
+	var gold_str := "~$%s expected" % GameState.abbrev(total)
 	if bonus > 0.0:
-		gold_str = "Wave $%s / Enhanced $%s" % [
+		gold_str = "Expected ~$%s / Enhanced ~$%s" % [
 			GameState.abbrev(total), GameState.abbrev(total * (1.0 + bonus))]
 	_wave_info_label.text = "Next - %s:   %s HP   %d enemies   %s" % [
 		tag, GameState.abbrev(d["hp"]), int(d["count"]), gold_str]
@@ -1323,6 +1397,10 @@ func set_hovered_structure(s: Structure) -> void:
 
 func _type_info(t: String) -> String:
 	var d: Dictionary = PieceData.TYPES[t]
+	if d["category"] == "tower":
+		d = PieceData.tower_stats(t, 1)
+	elif d["category"] == "trap":
+		d = PieceData.trap_stats(t, 1)
 	var line2 := ""
 	match d["category"]:
 		"wall":
@@ -1361,6 +1439,10 @@ func _update_start() -> void:
 	if GameState.game_over:
 		_start_button.disabled = true
 		return
+	if wave_manager.waves_started() >= GameRules.MAX_WAVE:
+		_start_button.text = "Wave limit reached"
+		_start_button.disabled = true
+		return
 	if not level.has_path():
 		_start_button.text = "Path Blocked!"
 		_start_button.disabled = true
@@ -1370,12 +1452,13 @@ func _update_start() -> void:
 	var cd := wave_manager.countdown_remaining()
 	if cd >= 0.0:
 		var b := wave_manager.send_bonus()
+		var timer_label := "auto in %ds" % ceili(cd) if wave_manager.auto_advance else "timer %ds" % ceili(cd)
 		if b > 0:
-			label += "\n(auto in %ds,  +%dg)" % [ceili(cd), b]
+			label += "\n(%s,  +%dg)" % [timer_label, b]
 		else:
-			label += "\n(auto in %ds)" % ceili(cd)
+			label += "\n(%s)" % timer_label
 	_start_button.text = label
-	_start_button.disabled = false
+	_start_button.disabled = not wave_manager.can_start_wave()
 
 func _on_buy_toggled(pressed: bool, type: String) -> void:
 	if pressed:
@@ -1408,7 +1491,7 @@ func _on_speed_input(event: InputEvent) -> void:
 		_speed_idx = maxi(_speed_idx - 1, 0)
 	else:
 		return
-	Engine.time_scale = SPEEDS[_speed_idx]
+	GameState.game_speed = SPEEDS[_speed_idx]
 	_speed_button.text = _speed_label()
 
 func _speed_text(s: float) -> String:
@@ -1418,6 +1501,8 @@ func _speed_text(s: float) -> String:
 
 ## Compact speed-button caption (the L/R click hint lives in the tooltip).
 func _speed_label() -> String:
+	if GameState.simulation_limited:
+		return "%sx (~%sx)" % [GameState.abbrev(SPEEDS[_speed_idx]), GameState.abbrev(GameState.effective_speed)]
 	return _speed_text(SPEEDS[_speed_idx])
 
 func _on_auto_pressed() -> void:
@@ -1454,7 +1539,7 @@ func _refresh_popup() -> void:
 	if _popup_action == "upgrade":
 		if not s.can_upgrade():
 			# Maxed out (e.g. Tar at the slow cap) - nothing left to buy.
-			_popup.text = "Max Level\n(slow cap)"
+			_popup.text = "Maximum level"
 			_popup.disabled = true
 			_popup.add_theme_color_override("font_color", Color(0.92, 0.94, 0.98))
 			_popup.add_theme_color_override("font_hover_color", Color(1.0, 1.0, 1.0))
@@ -1519,6 +1604,8 @@ func _dps_at(s: Structure, level: int) -> float:
 		var mode: String = PieceData.TYPES[s.type]["mode"]
 		if mode == "beam":
 			return st["damage"]
+		if mode in ["slow", "support"]:
+			return 0.0
 		return st["damage"] * st["fire_rate"]
 	if cat == "trap":
 		var st2: Dictionary = PieceData.trap_stats(s.type, level)
@@ -1546,6 +1633,8 @@ func popup_activate() -> void:
 		level.sell_selected()
 
 func _on_start_pressed() -> void:
+	if _has_modal():
+		return
 	if wave_manager != null:
 		# Hold Alt to queue the next 10 waves; they fire one at a time as each
 		# wave's countdown elapses (not all stacked at once).
@@ -1556,6 +1645,8 @@ func _on_start_pressed() -> void:
 	_update_start()
 
 func _on_pause_pressed() -> void:
+	if _has_modal() or GameState.game_over:
+		return
 	var paused := not get_tree().paused
 	get_tree().paused = paused
 	_pause_button.text = "Resume" if paused else "Pause"
@@ -1564,7 +1655,7 @@ func _on_undo_pressed() -> void:
 	if level == null:
 		return
 	if not level.undo():
-		show_toast("Nothing to undo")
+		show_toast(level.undo_error if not level.undo_error.is_empty() else "Nothing to undo")
 
 func show_end_screen() -> void:
 	if _end_root != null:

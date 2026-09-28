@@ -10,8 +10,7 @@ const OUTLINE := Color(0.04, 0.04, 0.05)
 
 ## Minimum seconds between *visible* projectiles. A fast tower still does full
 ## damage every shot, but only spawns a flying bullet this often; the extra
-## shots in between hit instantly. Keeps rapid fire from looking like a solid
-## laser stream while still reading as "this tower is shooting".
+## shots in between remain invisible but follow the same logical trajectory.
 const VISUAL_SHOT_INTERVAL := 0.22
 
 var mode := "shot"
@@ -39,13 +38,15 @@ func _apply_stats() -> void:
 	aoe_radius = s["aoe_radius"]
 
 func can_upgrade() -> bool:
-	return true
+	return level < GameRules.MAX_LEVEL
 
 func upgrade_cost() -> int:
 	return PieceData.upgrade_cost(type, level)
 
-func do_upgrade() -> void:
-	gold_invested += upgrade_cost()
+func do_upgrade(paid: int = 0) -> void:
+	if not can_upgrade():
+		return
+	gold_invested = GameRules.safe_add(gold_invested, paid)
 	level += 1
 	if level > GameState.best_tower_level:
 		GameState.best_tower_level = level
@@ -80,16 +81,15 @@ func info_text() -> String:
 ##                    Every shot still hits for full damage.
 ##   _visual_cd       gates VISIBLE projectile spawn (VISUAL_SHOT_INTERVAL).
 ##                    When a shot is throttled, _fire() routes straight to
-##                    _direct_hit and skips spawning a Bullet node.
+##                    invisible projectiles with unchanged impact timing.
 ##
 ## A maxed Bullet (~4 shots/sec) would otherwise look like a solid laser
 ## stream of bullets; the throttle keeps the *visual* down to ~5/sec while
 ## damage continues at the real rate. DO NOT collapse these two cooldowns
 ## into one - you'd either nerf the DPS or restore the laser-stream look.
 ##
-## The `shots < 12` cap is per-frame so a 100x-speed tower can't burn the
-## whole frame budget firing; the rest of the catch-up happens next frame.
-func _process(delta: float) -> void:
+## Fixed 1/120-second steps and a bounded fire rate keep each tick finite.
+func simulate_step(delta: float) -> void:
 	if GameState.game_over:
 		return
 	if mode == "support":
@@ -112,12 +112,15 @@ func _process(delta: float) -> void:
 	# Fire repeatedly if elapsed time allows, so high game speeds keep up.
 	var shots := 0
 	while _cooldown <= 0.0 and shots < 12:
+		if not level_ref.has_projectile_capacity():
+			_cooldown = 0.0
+			break
 		var target := _acquire_target()
 		if target == null:
 			_cooldown = 0.0
 			break
 		# Only spawn a visible projectile every so often; faster shots hit
-		# instantly so a high fire rate doesn't read as a solid laser beam.
+		# invisibly so a high fire rate does not read as a solid laser beam.
 		var show := _visual_cd <= 0.0
 		if show:
 			_visual_cd += VISUAL_SHOT_INTERVAL
@@ -228,12 +231,11 @@ func _acquire_target() -> Enemy:
 	return best
 
 func _fire(target: Enemy, show: bool = true) -> void:
-	# At high game speed, or when throttling the visible projectile rate, skip the
-	# flying bullet and apply damage instantly (same on-hit behaviour).
-	if not show or GameState.reduced_gfx():
-		_direct_hit(target)
+	if not level_ref.has_projectile_capacity():
 		return
 	var b := Bullet.new()
+	# Visibility never changes impact timing or damage.
+	b.visible = show and not GameState.reduced_gfx()
 	b.position = position
 	# Shots take the tower's BODY colour so each tower's ammo matches it (the old
 	# per-type bullet_colors overlapped - missile/cannon both orange, etc.).
@@ -242,27 +244,6 @@ func _fire(target: Enemy, show: bool = true) -> void:
 	b.style = BULLET_STYLE.get(type, "bullet")
 	b.level_ref = level_ref
 	level_ref.bullets.add_child(b)
-
-## Instant version of a shot, used when graphics are reduced. Mirrors the
-## bullet's on-hit behaviour (area damage + slow, or single-target).
-func _direct_hit(target: Enemy) -> void:
-	if target == null or not is_instance_valid(target) or not target.is_alive():
-		return
-	var dmg := _boosted_damage()
-	var aoe := _boosted_aoe()
-	if aoe > 0.0:
-		for node in level_ref.enemies_near(target.position, aoe):
-			var e := node as Enemy
-			if e == null or not e.is_alive():
-				continue
-			if target.position.distance_to(e.position) <= aoe:
-				e.take_damage(dmg)
-				if slow > 0.0:
-					e.apply_slow(slow, slow_time)
-	else:
-		target.take_damage(dmg)
-		if slow > 0.0:
-			target.apply_slow(slow, slow_time)
 
 func _draw() -> void:
 	if mode == "beam":

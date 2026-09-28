@@ -171,6 +171,7 @@ static func category(type: String) -> String:
 ##
 ## Level 1 is unmodified base (n = 0). DON'T call with level < 1.
 static func tower_stats(type: String, level: int) -> Dictionary:
+	level = clampi(level, 1, GameRules.MAX_LEVEL)
 	var d: Dictionary = TYPES[type].duplicate(true)
 	var n := level - 1
 	var dmg_step: float
@@ -202,10 +203,10 @@ static func tower_stats(type: String, level: int) -> Dictionary:
 	elif type == "sniper" or type == "missile":
 		# Doubles every 30 levels (softened from 20 to keep late game from
 		# running away geometrically past enemy HP).
-		d["fire_rate"] = d["fire_rate"] * pow(2.0, int(level / 30))
+		d["fire_rate"] = minf(GameRules.MAX_FIRE_RATE, d["fire_rate"] * pow(2.0, mini(30, int(level / 30))))
 	else:
 		# Ice / Laser / Cannon: gentle linear scaling.
-		d["fire_rate"] = d["fire_rate"] * (1.0 + 0.08 * n)
+		d["fire_rate"] = minf(GameRules.MAX_FIRE_RATE, d["fire_rate"] * (1.0 + 0.08 * n))
 	# Slow strength climbs linearly from its base to SLOW_CAP at SLOW_MAX_LEVEL
 	# (shared with Tar). An adjacent Amplifier lifts the effective slow further
 	# at runtime, up to SLOW_BOOST_CAP.
@@ -249,6 +250,7 @@ static func tower_stats(type: String, level: int) -> Dictionary:
 ##
 ## Level 1 is unmodified base (n = 0). DON'T call with level < 1.
 static func trap_stats(type: String, level: int) -> Dictionary:
+	level = clampi(level, 1, GameRules.MAX_LEVEL)
 	var d: Dictionary = TYPES[type].duplicate(true)
 	var n := level - 1
 	if type == "spike_trap":
@@ -270,6 +272,7 @@ static func trap_stats(type: String, level: int) -> Dictionary:
 ## exponentially). Traps scale damage gently, so they use a cheap linear curve
 ## - the triangular cost was wildly out of line with the small per-level gain.
 static func upgrade_cost(type: String, level: int) -> int:
+	level = clampi(level, 1, GameRules.MAX_LEVEL)
 	var base: float = TYPES[type]["cost"]
 	if category(type) == "trap":
 		return int(round(base * level))

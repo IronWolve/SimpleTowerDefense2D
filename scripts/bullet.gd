@@ -18,6 +18,27 @@ var level_ref: Level  # set by tower; used for spatial enemy lookups
 var _dest := Vector2.ZERO
 var _exploding := false
 var _boom := 0.0
+var _counted := false
+
+func _ready() -> void:
+	_register()
+
+func _register() -> void:
+	if level_ref != null and not _counted:
+		level_ref.active_projectiles += 1
+		_counted = true
+
+func _release_capacity() -> void:
+	if _counted and is_instance_valid(level_ref):
+		level_ref.active_projectiles -= 1
+	_counted = false
+
+func _retire() -> void:
+	_release_capacity()
+	queue_free()
+
+func _exit_tree() -> void:
+	_release_capacity()
 
 func setup(t: Enemy, dmg: float, col: Color, sl: float, sl_t: float, aoe: float) -> void:
 	target = t
@@ -29,14 +50,14 @@ func setup(t: Enemy, dmg: float, col: Color, sl: float, sl_t: float, aoe: float)
 	if t != null:
 		_dest = t.position
 
-func _process(delta: float) -> void:
+func simulate_step(delta: float) -> void:
 	if GameState.game_over:
 		return
 	if _exploding:
 		_boom += delta
 		queue_redraw()
 		if _boom >= BOOM_TIME:
-			queue_free()
+			_retire()
 		return
 	# Only missiles home: they keep steering toward the live target and
 	# re-acquire a new one if it dies. Other shots fly straight to the spot
@@ -101,6 +122,10 @@ func _hit() -> void:
 			# _dest is in Level-local space; spawn_sparks wants global.
 			level_ref.spawn_sparks(level_ref.to_global(_dest), color, 10)
 		_exploding = true
+		_release_capacity()
+		if not visible or GameState.reduced_gfx():
+			_retire()
+			return
 		_boom = 0.0
 		queue_redraw()
 		return
@@ -113,7 +138,34 @@ func _hit() -> void:
 			# spawn_sparks expects GLOBAL coords; target.position is Level-local
 			# and gets mis-mapped once Level is zoomed/panned.
 			level_ref.spawn_sparks(target.global_position, color, 6)
-	queue_free()
+	_retire()
+
+func serialize(target_index: int) -> Dictionary:
+	return {
+		"pos": [position.x, position.y], "dest": [_dest.x, _dest.y],
+		"target": target_index, "speed": speed, "damage": damage,
+		"color": [color.r, color.g, color.b, color.a], "slow": slow,
+		"slow_time": slow_time, "aoe": aoe_radius, "retarget": retarget,
+		"style": style, "visible": visible,
+	}
+
+func restore(lvl: Level, data: Dictionary, targets: Array) -> void:
+	level_ref = lvl
+	_register()
+	position = Vector2(data["pos"][0], data["pos"][1])
+	_dest = Vector2(data["dest"][0], data["dest"][1])
+	var index := int(data["target"])
+	target = targets[index] if index >= 0 else null
+	speed = data.get("speed", 480.0)
+	damage = data.get("damage", 10.0)
+	var col: Array = data["color"]
+	color = Color(col[0], col[1], col[2], col[3])
+	slow = data.get("slow", 0.0)
+	slow_time = data.get("slow_time", 0.0)
+	aoe_radius = data.get("aoe", 0.0)
+	retarget = data.get("retarget", false)
+	style = data["style"]
+	visible = data.get("visible", true)
 
 func _draw() -> void:
 	if _exploding:

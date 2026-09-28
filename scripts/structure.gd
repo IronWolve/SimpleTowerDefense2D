@@ -12,13 +12,13 @@ var gold_invested := 0
 var level_ref: Level
 var selected := false
 
-func setup_piece(t: String, lvl: Level, stocked: bool) -> void:
+func setup_piece(t: String, lvl: Level, stocked: bool, paid: int = 0) -> void:
 	type = t
 	level_ref = lvl
 	category = PieceData.category(t)
 	blocks = PieceData.TYPES[t]["blocks"]
 	from_stock = stocked
-	gold_invested = 0 if stocked else PieceData.cost(t)
+	gold_invested = clampi(paid, 0, GameRules.MAX_CURRENCY)
 	level = 1
 	_apply_stats()
 	queue_redraw()
@@ -29,7 +29,7 @@ func can_upgrade() -> bool:
 func upgrade_cost() -> int:
 	return 0
 
-func do_upgrade() -> void:
+func do_upgrade(_paid: int = 0) -> void:
 	pass
 
 func sell_refund() -> int:

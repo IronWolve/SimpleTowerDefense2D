@@ -11,9 +11,7 @@ const PLAY_H := 600.0
 const MIN_ZOOM := 0.5
 const MAX_ZOOM := 2.5
 ## Board dimensions in cells (COLS x ROWS) for board_size 0/1/2.
-const BOARD_SIZES: Array[Vector2i] = [
-	Vector2i(32, 15), Vector2i(46, 22), Vector2i(64, 30),
-]
+const BOARD_SIZES: Array[Vector2i] = GameRules.BOARD_SIZES
 
 var COLS := 32
 var ROWS := 15
@@ -27,7 +25,11 @@ var walls: Node2D
 var towers: Node2D
 var enemies: Node2D
 var bullets: Node2D
+var active_projectiles := 0
 var hud: HUD
+var load_notice := ""
+var undo_error := ""
+var _visual_rng := RandomNumberGenerator.new()
 var _overlay: BuildOverlay
 
 var _pieces := {}
@@ -78,7 +80,8 @@ const _FLOAT_CAP := 60
 const _SPARK_CAP := 300
 
 func _ready() -> void:
-	var dim: Vector2i = BOARD_SIZES[clampi(GameState.board_size, 0, BOARD_SIZES.size() - 1)]
+	_visual_rng.randomize()
+	var dim: Vector2i = BOARD_SIZES[GameState.run_board_size]
 	COLS = dim.x
 	ROWS = dim.y
 	spawn_cell = Vector2i(0, ROWS / 2)
@@ -99,6 +102,7 @@ func _ready() -> void:
 		# every saved enemy back exactly where it was.
 		_load_pieces(GameState.pending_load)
 		_load_enemies(GameState.pending_load)
+		_load_bullets(GameState.pending_load)
 	else:
 		match GameState.map_type:
 			"spiral":
@@ -115,16 +119,17 @@ func _ready() -> void:
 ## If the saved grid was built for a different board size, refuses to apply
 ## it (would silently truncate / leave gaps) and reports via the HUD toast.
 func _build_custom_map(map_name: String) -> void:
-	var grid: Array = GameState.load_map_grid(map_name)
+	var data := GameState.load_map_data(map_name)
+	var grid: Array = data.get("grid", [])
 	if grid.size() != ROWS or (grid.size() > 0 and grid[0].length() != COLS):
 		var msg := "Custom map \"%s\" was %dx%d, current board is %dx%d - not loaded" % [
 			map_name,
 			grid[0].length() if grid.size() > 0 else 0,
 			grid.size(), COLS, ROWS]
-		push_warning(msg)
-		if hud != null and hud.has_method("show_toast"):
-			hud.show_toast(msg, 4.5)
+		load_notice = msg
 		return
+	spawn_cell = Vector2i(int(data["spawn"][0]), int(data["spawn"][1]))
+	base_cell = Vector2i(int(data["base"][0]), int(data["base"][1]))
 	for r in range(ROWS):
 		var line: String = grid[r]
 		for c in range(COLS):
@@ -146,7 +151,7 @@ func _bulk_upgrade(s: Structure, limit: int) -> void:
 			break
 		var refund := 0 if GameState.unlimited_money else cost
 		_record_action({"k": "upgrade", "cell": s.cell, "cost": refund})
-		s.do_upgrade()
+		s.do_upgrade(refund)
 		done += 1
 	_end_group()
 	if done > 0 and hud != null:
@@ -211,27 +216,53 @@ func dump_walls_grid() -> Array[String]:
 
 ## Snapshot the whole run for save/load: board, every placed piece, economy,
 ## wave state (incl. in-flight spawn jobs) and every live enemy. In-flight
-## bullets are intentionally skipped (they re-fire instantly).
+## projectiles, cooldowns and underlying-wall ownership are included.
 func serialize_run() -> Dictionary:
+	# An input event can save before the next simulation tick flushes a new wall.
+	if _paths_dirty:
+		_paths_dirty = false
+		_recompute_paths_now()
+		_update_preview()
 	var wm: WaveManager = hud.wave_manager if hud != null else null
 	var pieces: Array = []
 	for cell in _pieces:
 		var s: Structure = _pieces[cell]
 		if s == null:
 			continue
-		pieces.append({
+		var piece := {
 			"t": s.type, "x": cell.x, "y": cell.y,
 			"lvl": s.level, "inv": s.gold_invested, "stock": s.from_stock,
 			"under": _under_walls.has(cell),
-		})
+		}
+		if s is Tower:
+			piece["cooldown"] = s._cooldown
+			piece["visual_cd"] = s._visual_cd
+		elif s is Trap:
+			piece["erupt_timer"] = s._erupt_timer
+		if _under_walls.has(cell):
+			var wall: Structure = _under_walls[cell]
+			piece["under_wall"] = {"inv": wall.gold_invested, "stock": wall.from_stock}
+		pieces.append(piece)
 	var ens: Array = []
+	var enemy_ids := {}
 	for node in enemies.get_children():
 		var e := node as Enemy
 		if e != null and e.is_alive():
+			enemy_ids[e.get_instance_id()] = ens.size()
 			ens.append(e.serialize())
+	var shots: Array = []
+	for b in bullets.get_children():
+		if b is Bullet and not b.is_queued_for_deletion() and not b._exploding:
+			var target_index := -1
+			if is_instance_valid(b.target):
+				target_index = enemy_ids.get(b.target.get_instance_id(), -1)
+			shots.append(b.serialize(target_index))
+	var options := {}
+	for option in ["bonus_lives_per_wave", "unlimited_money", "unlimited_lives", "free_walls", "round_timer_bonus"]:
+		options[option] = GameState.get(option)
 	return {
 		"v": GameState.SAVE_FORMAT_VERSION,
-		"board_size": GameState.board_size,
+		"board_size": BOARD_SIZES.find(Vector2i(COLS, ROWS)),
 		"spawn": [spawn_cell.x, spawn_cell.y],
 		"base": [base_cell.x, base_cell.y],
 		"gold": GameState.gold, "lives": GameState.lives,
@@ -240,6 +271,7 @@ func serialize_run() -> Dictionary:
 		"wave_state": wm.serialize() if wm != null else {},
 		"enemies": ens,
 		"pieces": pieces,
+		"bullets": shots, "run_options": options,
 	}
 
 ## Recreate every saved enemy at its exact state. Called on load after the board
@@ -250,9 +282,20 @@ func _load_enemies(data: Dictionary) -> void:
 		enemies.add_child(e)
 		e.restore(self, ed)
 
+func _load_bullets(data: Dictionary) -> void:
+	var targets := enemies.get_children()
+	for shot in data.get("bullets", []):
+		var b := Bullet.new()
+		bullets.add_child(b)
+		b.restore(self, shot, targets)
+
+func has_projectile_capacity() -> bool:
+	return active_projectiles < GameRules.MAX_BULLETS
+
 ## Write the auto-save slot (called by WaveManager on each wave clear).
 func autosave() -> void:
-	GameState.write_save("auto", serialize_run())
+	if not GameState.write_save("auto", serialize_run()) and hud != null:
+		hud.show_toast("Autosave failed; save your game before quitting", 4.0)
 
 ## Rebuild the board from a save snapshot: place every piece at its cell/level,
 ## restore tucked-under walls, set spawn/base, then recompute paths.
@@ -272,7 +315,10 @@ func _load_pieces(data: Dictionary) -> void:
 			w.position = cell_center(c)
 			w.cell = c
 			walls.add_child(w)
-			w.setup_piece("wall", self, true)
+			# Old saves did not record ownership/value of underlying walls. Use
+			# zero paid value, never invent a cash refund or a free stock piece.
+			var under: Dictionary = pd.get("under_wall", {})
+			w.setup_piece("wall", self, under.get("stock", false), int(under.get("inv", 0)))
 			_under_walls[c] = w
 		var s := _make_piece(t)
 		s.position = cell_center(c)
@@ -286,6 +332,11 @@ func _load_pieces(data: Dictionary) -> void:
 		s.level = int(pd.get("lvl", 1))
 		s.gold_invested = int(pd.get("inv", 0))
 		s._apply_stats()
+		if s is Tower:
+			s._cooldown = pd.get("cooldown", 0.0)
+			s._visual_cd = pd.get("visual_cd", 0.0)
+		elif s is Trap:
+			s._erupt_timer = pd.get("erupt_timer", 0.0)
 		s.queue_redraw()
 		_pieces[c] = s
 	_recompute_paths_now()
@@ -1122,7 +1173,7 @@ func gold_bonus() -> float:
 	var b := 0.0
 	for node in towers.get_children():
 		var t := node as Tower
-		if t != null and t.type == "gold":
+		if t != null and not t.is_queued_for_deletion() and t.type == "gold":
 			var amp := minf(GOLD_AMP_CAP, amplifier_bonus_at(t.cell))
 			b += PieceData.SUPPORT_PCT_PER_LEVEL * t.level * (1.0 + amp)
 	return b
@@ -1154,7 +1205,7 @@ func enemies_near(pos: Vector2, radius: float) -> Array:
 			if bucket == null:
 				continue
 			for e in bucket:
-				if pos.distance_squared_to(e.position) <= r2:
+				if is_instance_valid(e) and e.is_alive() and pos.distance_squared_to(e.position) <= r2:
 					out.append(e)
 	return out
 
@@ -1170,6 +1221,24 @@ func _recompute_paths_now() -> void:
 			e.repath()
 
 # --- input ---
+func cancel_pointer_drag() -> void:
+	_left_held = false
+	_right_held = false
+	_middle_held = false
+	_drag_start_cell = Vector2i(-1, -1)
+
+func _input(event: InputEvent) -> void:
+	# Releases over GUI controls never reach _unhandled_input.
+	if event is InputEventMouseButton and not event.pressed:
+		match event.button_index:
+			MOUSE_BUTTON_LEFT: _left_held = false
+			MOUSE_BUTTON_RIGHT: _right_held = false
+			MOUSE_BUTTON_MIDDLE: _middle_held = false
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_WM_WINDOW_FOCUS_OUT:
+		cancel_pointer_drag()
+
 func _unhandled_input(event: InputEvent) -> void:
 	if GameState.game_over:
 		return
@@ -1399,7 +1468,7 @@ func _try_place(c: Vector2i, type: String) -> void:
 	s.position = cell_center(c)
 	s.cell = c
 	_container_for(type).add_child(s)
-	s.setup_piece(type, self, from_stock)
+	s.setup_piece(type, self, from_stock, gold_spent)
 	_pieces[c] = s
 	if s.blocks:
 		_recompute_paths()
@@ -1510,7 +1579,7 @@ func spawn_float(pos: Vector2, text: String, col: Color) -> void:
 	# Small random jitter so back-to-back kills at the same spot don't stack
 	# into one unreadable blob. Horizontal range wider than vertical so the
 	# popups separate sideways but stay anchored on the enemy.
-	var jitter := Vector2(randf_range(-12.0, 12.0), randf_range(-4.0, 4.0))
+	var jitter := Vector2(_visual_rng.randf_range(-12.0, 12.0), _visual_rng.randf_range(-4.0, 4.0))
 	_floats.append({
 		"pos": to_local(pos) + jitter, "vel": Vector2(0.0, -34.0),
 		"text": text, "col": col, "age": 0.0,
@@ -1520,14 +1589,14 @@ func spawn_float(pos: Vector2, text: String, col: Color) -> void:
 	queue_redraw()
 
 ## Burst small sparks outward in `color` from `pos` - used on bullet/AOE hits.
-## Auto-skipped during reduced graphics (which is also where bullets are skipped).
+## Cosmetic only; skipped during reduced graphics.
 func spawn_sparks(pos: Vector2, col: Color, count := 6) -> void:
 	if GameState.reduced_gfx():
 		return
 	var local := to_local(pos)
 	for i in count:
-		var a := randf() * TAU
-		var s := randf_range(70.0, 150.0)
+		var a := _visual_rng.randf() * TAU
+		var s := _visual_rng.randf_range(70.0, 150.0)
 		_sparks.append({
 			"pos": local, "vel": Vector2(cos(a), sin(a)) * s,
 			"col": col, "age": 0.0,
@@ -1607,7 +1676,7 @@ func upgrade_selected() -> void:
 		return
 	var refund := 0 if GameState.unlimited_money else cost
 	_record_action({"k": "upgrade", "cell": s.cell, "cost": refund})
-	s.do_upgrade()
+	s.do_upgrade(refund)
 	if (s.type == "gold" or s.type == "amplifier") and hud != null:  # gold total may change
 		hud._update_wave_info()
 
@@ -1634,7 +1703,11 @@ func _end_group() -> void:
 
 ## Reverse the most recent user action. Returns true if anything was undone.
 func undo() -> bool:
+	undo_error = ""
 	if _undo_stack.is_empty():
+		return false
+	undo_error = _undo_group_error(_undo_stack[-1])
+	if not undo_error.is_empty():
 		return false
 	var group: Array = _undo_stack.pop_back()
 	# Replay in reverse so a sequence like place-then-upgrade unwinds in order.
@@ -1644,6 +1717,74 @@ func undo() -> bool:
 	if hud != null:
 		hud.dismiss_popup()
 	return true
+
+func _undo_group_error(group: Array) -> String:
+	var board := {}
+	var underlying := _under_walls.duplicate()
+	for at in _pieces:
+		board[at] = _pieces[at].type
+	var balance := GameState.gold
+	var stock := GameState.stock.duplicate()
+	for i in range(group.size() - 1, -1, -1):
+		var entry: Dictionary = group[i]
+		var at: Vector2i = entry["cell"]
+		match entry["k"]:
+			"place":
+				if not board.has(at):
+					return "Undo is unavailable because the board changed"
+				if underlying.has(at):
+					board[at] = "wall"
+					underlying.erase(at)
+				else:
+					board.erase(at)
+				balance = GameRules.safe_add(balance, entry["gold"])
+				if entry["from_stock"] and entry["stock_key"] != "":
+					stock[entry["stock_key"]] += 1
+			"remove":
+				if balance < entry["refund_gold"] or (entry["stock_returned"] and stock.get(entry["stock_key"], 0) < 1):
+					return "Undo needs the gold or stock returned by that sale"
+				balance -= entry["refund_gold"]
+				if entry["stock_returned"]:
+					stock[entry["stock_key"]] -= 1
+				if board.has(at):
+					if board[at] != "wall" or PieceData.category(entry["type"]) != "tower":
+						return "Undo would overlap an existing piece"
+					underlying[at] = true
+				board[at] = entry["type"]
+			"upgrade":
+				if not board.has(at):
+					return "Undo is unavailable because the board changed"
+				balance = GameRules.safe_add(balance, entry["cost"])
+	var blocked := {}
+	var added_blockers: Array[Vector2i] = []
+	for at in board:
+		if PieceData.TYPES[board[at]]["blocks"]:
+			blocked[at] = true
+			if not _is_blocked(at):
+				added_blockers.append(at)
+	for e in enemies.get_children():
+		if not e is Enemy or not e.is_alive():
+			continue
+		for at in added_blockers:
+			if e.occupies(at):
+				return "Wait for enemies to leave before undoing that sale"
+	var reachable := {base_cell: true}
+	var queue: Array[Vector2i] = [base_cell]
+	var index := 0
+	while index < queue.size():
+		var at: Vector2i = queue[index]
+		index += 1
+		for direction in DIRS:
+			var next := at + direction
+			if in_bounds(next) and not blocked.has(next) and not reachable.has(next):
+				reachable[next] = true
+				queue.append(next)
+	if not reachable.has(spawn_cell):
+		return "Undo would block the route to the exit"
+	for e in enemies.get_children():
+		if e is Enemy and e.is_alive() and not reachable.has(e.cell):
+			return "Undo would trap an enemy"
+	return ""
 
 func _apply_undo(e: Dictionary) -> void:
 	match e["k"]:
@@ -1684,8 +1825,7 @@ func _undo_remove(e: Dictionary) -> void:
 	_container_for(e["type"]).add_child(s)
 	s.setup_piece(e["type"], self, e["from_stock"])
 	s.gold_invested = e["gold_invested"]
-	while s.level < e["level"]:
-		s.level += 1
+	s.level = e["level"]
 	if s.has_method("_apply_stats"):
 		s.call("_apply_stats")
 	s.queue_redraw()

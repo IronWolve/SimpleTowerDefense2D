@@ -17,7 +17,7 @@ extends Node
 ##   hp     = normal * (4.0 + N/10)  -- big multiplier on top, so bosses
 ##                                       always feel scary at every tier
 ##   count  = 1, 2, 3, 5, 7, ...     -- BOSS_COUNTS schedule
-##   reward = base * BOSS_REWARD_MULT (10x normal)
+##   reward = base * BOSS_REWARD_MULT (5x normal)
 ##
 ## Turtle (rides every boss wave):
 ##   count grows +1 per boss wave (1 at W5, 2 at W15, ...)
@@ -106,6 +106,18 @@ var _bonus_lives_through := 0
 var _queued_sends := 0
 var _queue_timer := 0.0
 var _queue_interval := QUEUE_INTERVAL
+var rng := RandomNumberGenerator.new()
+
+func _init() -> void:
+	rng.randomize()
+
+func _live_enemy_count() -> int:
+	var count := 0
+	if level != null:
+		for enemy in level.enemies.get_children():
+			if enemy is Enemy and enemy.is_alive():
+				count += 1
+	return count
 
 func waves_started() -> int:
 	return _started
@@ -113,10 +125,9 @@ func waves_started() -> int:
 func bonus_lives_through() -> int:
 	return _bonus_lives_through
 
-## True when nothing is spawning and no enemies are alive - i.e. between waves,
-## the only time a manual Save is allowed (we don't serialize live enemies).
+## True when nothing is spawning and no enemies remain alive.
 func is_field_clear() -> bool:
-	return _jobs.is_empty() and get_tree().get_nodes_in_group("enemies").is_empty()
+	return _jobs.is_empty() and _live_enemy_count() == 0
 
 ## Snapshot wave progress, including in-flight spawn jobs (stored as kind +
 ## remaining + timer + wave; the per-wave stats are rebuilt from the wave # on
@@ -132,6 +143,7 @@ func serialize() -> Dictionary:
 		"started": _started, "countdown": _countdown, "auto": auto_advance,
 		"bonus_through": _bonus_lives_through,
 		"queued": _queued_sends, "queue_timer": _queue_timer, "jobs": jobs,
+		"queue_interval": _queue_interval, "rng_state": str(rng.state),
 	}
 
 ## Restore wave progress (counters + in-flight spawn jobs) from a snapshot.
@@ -143,6 +155,9 @@ func restore(d: Dictionary) -> void:
 	_bonus_lives_through = int(d.get("bonus_through", _started))
 	_queued_sends = int(d.get("queued", 0))
 	_queue_timer = d.get("queue_timer", 0.0)
+	_queue_interval = d.get("queue_interval", QUEUE_INTERVAL)
+	if d.has("rng_state"):
+		rng.state = int(d["rng_state"])
 	_jobs = []
 	for jd in d.get("jobs", []):
 		var w := int(jd.get("wave", _started))
@@ -202,18 +217,20 @@ func send_bonus() -> int:
 	return 0
 
 func can_start_wave() -> bool:
-	return not GameState.game_over and level != null and level.has_path()
+	return not GameState.game_over and level != null and level.has_path() and _started < GameRules.MAX_WAVE and _jobs.size() <= GameRules.MAX_JOBS - 3
 
 ## Alt-send: launch the next wave now, then auto-fire the following ones one at
 ## a time as each wave's countdown elapses, up to `n` total. Spaced like normal
 ## pacing - unlike clicking n times, which would stack n waves simultaneously.
 func send_waves(n: int, interval := QUEUE_INTERVAL) -> void:
+	if n <= 0:
+		return
 	if not can_start_wave():
 		return
 	start_next_wave(true)
-	_queued_sends = maxi(0, n - 1)
-	_queue_interval = interval
-	_queue_timer = interval
+	_queued_sends = clampi(n - 1, 0, 1000)
+	_queue_interval = clampf(interval, 0.0, 30.0)
+	_queue_timer = _queue_interval
 
 ## Bonus an Alt-sent wave pays: the maximum early-send bonus (full timer's worth)
 ## regardless of the live countdown, since Alt-send fires near-instantly. 0 on
@@ -245,12 +262,12 @@ func start_next_wave(max_bonus := false) -> void:
 	if def["boss_count"] > 0:
 		_jobs.append({
 			"kind": "boss", "remaining": def["boss_count"],
-			"timer": randf_range(1.0, 5.0), "def": _boss_def(_started), "wave": _started,
+			"timer": rng.randf_range(1.0, 5.0), "def": _boss_def(_started), "wave": _started,
 		})
 	if def["turtle_count"] > 0:
 		_jobs.append({
 			"kind": "turtle", "remaining": def["turtle_count"],
-			"timer": randf_range(1.0, 5.0), "def": _turtle_def(_started), "wave": _started,
+			"timer": rng.randf_range(1.0, 5.0), "def": _turtle_def(_started), "wave": _started,
 		})
 	# The countdown to the NEXT wave begins as soon as this wave starts.
 	_countdown = _initial_countdown()
@@ -270,8 +287,14 @@ func _build_def(w: int) -> Dictionary:
 	var reward := _base_reward(w)
 	var base_interval := maxf(0.30, 0.85 - (w - 1) * 0.03)
 	var s := _style_for(w)
-	# Total gold the whole wave is worth (normal enemies + all bosses at 5x).
-	var total_reward := count * reward \
+	# Expected normal income: enemy types have different reward multipliers.
+	var weight_sum := 0.0
+	var weighted_reward := 0.0
+	for index in range(ENEMY_TYPES.size()):
+		var weight := float(s["weights"][index])
+		weight_sum += weight
+		weighted_reward += weight * round(reward * float(ENEMY_TYPES[index]["reward"]))
+	var total_reward := count * weighted_reward / weight_sum \
 		+ (_boss_count(w) + _turtle_count(w)) * reward * BOSS_REWARD_MULT
 	return {
 		"hp": hp, "spd": spd, "count": count, "reward": reward,
@@ -304,43 +327,45 @@ func _turtle_def(w: int) -> Dictionary:
 		"color": TURTLE_COLOR, "radius": 24.0,
 	}
 
-func _process(delta: float) -> void:
+func simulate_step(delta: float) -> void:
 	if GameState.game_over:
 		return
 	var i := 0
+	var available := maxi(0, GameRules.MAX_ENEMIES - _live_enemy_count())
 	while i < _jobs.size():
 		var job: Dictionary = _jobs[i]
-		job["timer"] -= delta
-		if job["timer"] <= 0.0:
+		job["timer"] = maxf(0.0, float(job["timer"]) - delta)
+		if job["timer"] <= 0.0 and available > 0:
 			if job["kind"] == "boss" or job["kind"] == "turtle":
-				var k := mini(job["remaining"], randi_range(1, 3))
+				var k := mini(available, mini(job["remaining"], rng.randi_range(1, 3)))
 				for _j in range(k):
 					if job["kind"] == "turtle":
 						_spawn_boss(job["def"], "turtle")
 					else:
 						# Beetles and spiders are a random mix, same stats.
 						_spawn_boss(job["def"],
-							"spider" if randf() < 0.5 else "beetle")
+							"spider" if rng.randf() < 0.5 else "beetle")
 				job["remaining"] -= k
-				job["timer"] = randf_range(1.0, 5.0)
+				available -= k
+				job["timer"] = rng.randf_range(1.0, 5.0)
 			else:
 				var def: Dictionary = job["def"]
 				var ti := _pick_type(def["weights"])
 				var cmin: int = def["cluster"][0]
 				var cmax: int = def["cluster"][1]
-				var cl := mini(job["remaining"], randi_range(cmin, cmax))
+				var cl := mini(available, mini(job["remaining"], rng.randi_range(cmin, cmax)))
 				for _j in range(cl):
 					_spawn_normal(def, ti)
 				job["remaining"] -= cl
+				available -= cl
 				var jit: Array = def["jitter"]
 				job["timer"] = float(def["interval"]) \
-					* randf_range(float(jit[0]), float(jit[1]))
+					* rng.randf_range(float(jit[0]), float(jit[1]))
 			if job["remaining"] <= 0:
 				_jobs.remove_at(i)
 				continue
 		i += 1
-	var cleared := _jobs.is_empty() \
-		and get_tree().get_nodes_in_group("enemies").is_empty()
+	var cleared := is_field_clear()
 	_check_wave_bonus(cleared)
 	_tick_queue(delta)
 	_tick_countdown(delta, cleared)
@@ -352,7 +377,8 @@ func _tick_queue(delta: float) -> void:
 	if _queued_sends <= 0:
 		return
 	if not can_start_wave():
-		_queued_sends = 0
+		if GameState.game_over or _started >= GameRules.MAX_WAVE or level == null or not level.has_path():
+			_queued_sends = 0
 		return
 	_queue_timer -= delta
 	if _queue_timer > 0.0:
@@ -365,9 +391,8 @@ func _tick_queue(delta: float) -> void:
 func _check_wave_bonus(cleared: bool) -> void:
 	if cleared and _started > _bonus_lives_through:
 		if GameState.bonus_lives_per_wave:
-			var gained := 0
-			for w in range(_bonus_lives_through + 1, _started + 1):
-				gained += w
+			var count := _started - _bonus_lives_through
+			var gained := count * (_bonus_lives_through + 1 + _started) / 2
 			GameState.add_lives(gained)
 		_bonus_lives_through = _started
 		# A wave just cleared and the field is empty - auto-save the run.
@@ -375,13 +400,13 @@ func _check_wave_bonus(cleared: bool) -> void:
 			level.autosave()
 
 func _tick_countdown(delta: float, _cleared: bool) -> void:
-	if _countdown <= 0.0:
+	if _countdown < 0.0:
 		return
-	_countdown -= delta
+	_countdown = maxf(0.0, _countdown - delta)
 	if _countdown > 0.0:
 		return
 	_countdown = 0.0
-	if auto_advance:
+	if auto_advance and can_start_wave():
 		start_next_wave()
 
 ## How long the current wave runs solo before the next wave layers on top.
@@ -426,7 +451,7 @@ func _pick_type(weights: Array) -> int:
 		total += int(w)
 	if total <= 0:
 		return 0
-	var r := randi() % total
+	var r := rng.randi() % total
 	for i in range(weights.size()):
 		r -= int(weights[i])
 		if r < 0:
