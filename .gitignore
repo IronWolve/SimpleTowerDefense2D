@@ -10,6 +10,13 @@
 /tests/*
 !/.gitignore
 !/LICENSE
+
+# Public landing page and its two approved screenshots.
+!/README.md
+!/screenshots/
+/screenshots/*
+!/screenshots/gameplay.jpg
+!/screenshots/options.png
 !/VERSION
 !/project.godot
 !/export_presets.cfg
