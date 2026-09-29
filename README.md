@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="screenshots/bs-logo.png" width="160" height="160" alt="BS logo">
+
 # Simple Tower Defense 2D
 
 **Build a maze. Make every tile count.**
@@ -102,7 +104,7 @@ Open **Options → Help** for the in-game guide, stats, and more shortcuts. Save
 
 ## License & credits
 
-Created by [IronWolve](https://github.com/IronWolve), using [Godot Engine](https://godotengine.org/). Licensed under the [MIT license](LICENSE).
+Created by [IronWolve](https://github.com/IronWolve), using [Godot Engine](https://godotengine.org/). Game code is licensed under the [MIT license](LICENSE). The BS logo is the owner’s branding; see the [branding notice](licenses/BRANDING.txt).
 
 Godot and its bundled components retain their own licenses. Notices are available under **Options → Licenses**, in the platform downloads, and in the [supplemental release notices](https://github.com/IronWolve/SimpleTowerDefense/releases/download/v59/THIRD_PARTY_LICENSES.txt).
 

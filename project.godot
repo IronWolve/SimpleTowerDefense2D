@@ -8,12 +8,12 @@ config_version=5
 config/name="Simple Tower Defense 2D"
 config/version="59.0.0"
 config/features=PackedStringArray("4.6", "GL Compatibility")
-run/main_scene="res://scenes/main.tscn"
+run/main_scene="res://src/main.tscn"
 
 [autoload]
 
-Events="*res://scripts/events.gd"
-GameState="*res://scripts/game_state.gd"
+Events="*res://src/events.gd"
+GameState="*res://src/game_state.gd"
 
 [debug]
 

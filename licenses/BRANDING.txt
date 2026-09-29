@@ -1,0 +1,5 @@
+BS portrait logo
+
+The BS logo in screenshots/bs-logo.png is owned by IronWolve and is used here
+with the owner's permission. All rights reserved. No public reuse license is
+granted for this branding, and the game code's MIT license does not license it.
