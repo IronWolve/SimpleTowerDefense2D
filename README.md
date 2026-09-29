@@ -8,9 +8,9 @@
 
 An endless tower defense game about clever routes, tower combinations, and surviving one more wave.
 
-[![Release](https://img.shields.io/github/v/release/IronWolve/SimpleTowerDefense?style=flat-square&color=5b8def)](https://github.com/IronWolve/SimpleTowerDefense/releases/latest) [![Godot](https://img.shields.io/badge/Godot-4.6-478cbf?style=flat-square)](https://godotengine.org/) [![License](https://img.shields.io/badge/license-MIT-86b56b?style=flat-square)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/IronWolve/SimpleTowerDefense2D?style=flat-square&color=5b8def)](https://github.com/IronWolve/SimpleTowerDefense2D/releases/latest) [![Godot](https://img.shields.io/badge/Godot-4.6-478cbf?style=flat-square)](https://godotengine.org/) [![License](https://img.shields.io/badge/license-MIT-86b56b?style=flat-square)](LICENSE)
 
-[**Download**](#download) · [**Features**](#features) · [**Towers & traps**](#towers--traps) · [**Controls**](#controls) · [**Release notes**](https://github.com/IronWolve/SimpleTowerDefense/releases)
+[**Download**](#download) · [**Features**](#features) · [**Towers & traps**](#towers--traps) · [**Controls**](#controls) · [**Release notes**](https://github.com/IronWolve/SimpleTowerDefense2D/releases)
 
 </div>
 
@@ -22,18 +22,18 @@ Place walls to shape the enemy route, cover the bends with towers, and turn long
 
 ## Download
 
-**[Latest release →](https://github.com/IronWolve/SimpleTowerDefense/releases/latest)**
+**[Latest release →](https://github.com/IronWolve/SimpleTowerDefense2D/releases/latest)**
 
 | Platform | v59 download |
 |:--|:--|
-| **Windows** · x86-64 | [Download ZIP](https://github.com/IronWolve/SimpleTowerDefense/releases/download/v59/SimpleTowerDefense2D_win_v59.zip) |
-| **Linux** · x86-64 | [Download ZIP](https://github.com/IronWolve/SimpleTowerDefense/releases/download/v59/SimpleTowerDefense2D_linux_v59.zip) |
-| **macOS** · Intel & Apple Silicon | [Download ZIP](https://github.com/IronWolve/SimpleTowerDefense/releases/download/v59/SimpleTowerDefense2D_osx_v59.zip) |
-| **Web** · browser package | [Download ZIP](https://github.com/IronWolve/SimpleTowerDefense/releases/download/v59/SimpleTowerDefense2D_web_v59.zip) |
+| **Windows** · x86-64 | [Download ZIP](https://github.com/IronWolve/SimpleTowerDefense2D/releases/download/v59/SimpleTowerDefense2D_win_v59.zip) |
+| **Linux** · x86-64 | [Download ZIP](https://github.com/IronWolve/SimpleTowerDefense2D/releases/download/v59/SimpleTowerDefense2D_linux_v59.zip) |
+| **macOS** · Intel & Apple Silicon | [Download ZIP](https://github.com/IronWolve/SimpleTowerDefense2D/releases/download/v59/SimpleTowerDefense2D_osx_v59.zip) |
+| **Web** · browser package | [Download ZIP](https://github.com/IronWolve/SimpleTowerDefense2D/releases/download/v59/SimpleTowerDefense2D_web_v59.zip) |
 
 Desktop downloads include the game runtime. The Web package needs HTTP(S) hosting. macOS requires 10.13+ on Intel or 11+ on Apple Silicon; the app is ad-hoc signed and is not notarized.
 
-See the [v59 release notes](https://github.com/IronWolve/SimpleTowerDefense/releases/tag/v59) for changes, checksums, and platform testing details.
+See the [v59 release notes](https://github.com/IronWolve/SimpleTowerDefense2D/releases/tag/v59) for changes, checksums, and platform testing details.
 
 ## Features
 
@@ -106,6 +106,6 @@ Open **Options → Help** for the in-game guide, stats, and more shortcuts. Save
 
 Created by [IronWolve](https://github.com/IronWolve), using [Godot Engine](https://godotengine.org/). Game code is licensed under the [MIT license](LICENSE). The BS logo is the owner’s branding; see the [branding notice](licenses/BRANDING.txt).
 
-Godot and its bundled components retain their own licenses. Notices are available under **Options → Licenses**, in the platform downloads, and in the [supplemental release notices](https://github.com/IronWolve/SimpleTowerDefense/releases/download/v59/THIRD_PARTY_LICENSES.txt).
+Godot and its bundled components retain their own licenses. Notices are available under **Options → Licenses**, in the platform downloads, and in the [supplemental release notices](https://github.com/IronWolve/SimpleTowerDefense2D/releases/download/v59/THIRD_PARTY_LICENSES.txt).
 
 Made a fork, a mod, or a video? A heads-up on [GitHub](https://github.com/IronWolve) is always welcome; it is not a license requirement.
